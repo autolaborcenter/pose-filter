@@ -1,9 +1,10 @@
 [package]
-name = "pose_filter"
+name = "pose-filter"
 version = "0.1.0"
-edition = "2018"
+edition = "2021"
 authors = ["YdrMaster"]
 readme = "README.md"
 
 [dependencies]
+rtk-ins570-rs = { path = "../rtk-ins570-rs" }
 nalgebra = "*"
