@@ -6,5 +6,4 @@ authors = ["YdrMaster"]
 readme = "README.md"
 
 [dependencies]
-rtk-ins570-rs = { path = "../rtk-ins570-rs" }
 nalgebra = "*"
