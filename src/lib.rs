@@ -48,7 +48,7 @@ impl PoseFilter<PoseType> for InterpolationAndPredictionFilter {
                 let (t2, p2) = (time, pose);
                 if t0 <= t1 && t1 <= t2 {
                     let k = (t1 - t0).as_secs_f32() / (t2 - t0).as_secs_f32();
-                    self.transform = interpolate(&p0, &p2, k).inverse() * p1;
+                    self.transform = p1 * interpolate(&p0, &p2, k).inverse();
                 }
                 self.relative_buffer = (t2, p2);
                 self.transform * pose
