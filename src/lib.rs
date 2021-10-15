@@ -18,8 +18,8 @@ pub enum PoseType {
 
 impl InterpolationAndPredictionFilter {
     pub fn new() -> Self {
-        let now = Instant::now();
         let zero = Isometry2::new(Vector2::new(0.0, 0.0), 0.0);
+        let now = Instant::now();
         Self {
             transform: zero,
             relative_buffer: (now, zero),
@@ -46,11 +46,13 @@ impl PoseFilter<PoseType> for InterpolationAndPredictionFilter {
                 let (t0, p0) = self.relative_buffer;
                 let (t1, p1) = self.absolute_buffer;
                 let (t2, p2) = (time, pose);
-                if t0 <= t1 && t1 <= t2 {
-                    let k = (t1 - t0).as_secs_f32() / (t2 - t0).as_secs_f32();
-                    self.transform = p1 * interpolate(&p0, &p2, k).inverse();
+                if t0 <= t1 {
+                    if t1 <= t2 {
+                        let k = (t1 - t0).as_secs_f32() / (t2 - t0).as_secs_f32();
+                        self.transform = p1 * interpolate(&p0, &p2, k).inverse();
+                    }
+                    self.relative_buffer = (t2, p2);
                 }
-                self.relative_buffer = (t2, p2);
                 self.transform * pose
             }
         }
