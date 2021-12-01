@@ -6,4 +6,4 @@ authors = ["YdrMaster"]
 readme = "README.md"
 
 [dependencies]
-nalgebra = "*"
+chassis = { path = "../chassis" }

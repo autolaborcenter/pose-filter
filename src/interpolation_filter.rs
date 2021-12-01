@@ -1,0 +1,58 @@
+﻿use crate::{Particle, PoseFilter, Stamped};
+use chassis::{isometry, Isometry2};
+use std::time::Instant;
+
+/// 基于插值的滤波器，适用于任何物体
+pub struct InterpolationFilter {
+    transform: Isometry2<f32>, // 经过插值调整的变换关系，用于相对变换单独到来时
+    relative_buffer: Particle, // 相对定位缓存，用于插值
+    absolute_buffer: Particle, // 绝对定位缓存，用于插值
+}
+
+pub enum PoseType {
+    Absolute,
+    Relative,
+}
+
+impl InterpolationFilter {
+    pub fn new() -> Self {
+        const ZERO: Isometry2<f32> = isometry(0.0, 0.0, 1.0, 0.0);
+        let now = Instant::now();
+        Self {
+            transform: ZERO,
+            relative_buffer: Stamped(now, ZERO),
+            absolute_buffer: Stamped(now, ZERO),
+        }
+    }
+}
+
+impl PoseFilter<PoseType> for InterpolationFilter {
+    fn update(&mut self, key: PoseType, time: Instant, pose: Isometry2<f32>) -> Isometry2<f32> {
+        match key {
+            PoseType::Absolute => {
+                self.absolute_buffer = Stamped(time, pose);
+                pose
+            }
+            PoseType::Relative => {
+                fn interpolate(p0: &Isometry2<f32>, p1: &Isometry2<f32>, k: f32) -> Isometry2<f32> {
+                    let d = p0.inverse() * p1;
+                    let v = d.translation.vector * k;
+                    let a = d.rotation.angle() * k;
+                    p0 * Isometry2::new(v, a)
+                }
+
+                let Stamped(t0, p0) = self.relative_buffer;
+                let Stamped(ta, pa) = self.absolute_buffer;
+                let (tr, pr) = (time, pose);
+                if t0 <= ta {
+                    if ta <= tr {
+                        let k = (ta - t0).as_secs_f32() / (tr - t0).as_secs_f32();
+                        self.transform = pa * interpolate(&p0, &pr, k).inverse();
+                    }
+                    self.relative_buffer = Stamped(tr, pr);
+                }
+                self.transform * pose
+            }
+        }
+    }
+}
