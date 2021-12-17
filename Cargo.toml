@@ -7,3 +7,5 @@ readme = "README.md"
 
 [dependencies]
 chassis = { path = "../chassis" }
+nalgebra = "*"
+rand = "*"

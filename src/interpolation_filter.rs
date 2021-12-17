@@ -1,6 +1,6 @@
 ﻿use crate::{Particle, PoseFilter, Stamped};
 use chassis::{isometry, Isometry2};
-use std::time::Instant;
+use std::time::Duration;
 
 /// 基于插值的滤波器，适用于任何物体
 pub struct InterpolationFilter {
@@ -15,19 +15,18 @@ pub enum PoseType {
 }
 
 impl InterpolationFilter {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         const ZERO: Isometry2<f32> = isometry(0.0, 0.0, 1.0, 0.0);
-        let now = Instant::now();
         Self {
             transform: ZERO,
-            relative_buffer: Stamped(now, ZERO),
-            absolute_buffer: Stamped(now, ZERO),
+            relative_buffer: Stamped(Duration::ZERO, ZERO),
+            absolute_buffer: Stamped(Duration::ZERO, ZERO),
         }
     }
 }
 
 impl PoseFilter<PoseType> for InterpolationFilter {
-    fn update(&mut self, key: PoseType, time: Instant, pose: Isometry2<f32>) -> Isometry2<f32> {
+    fn update(&mut self, key: PoseType, time: Duration, pose: Isometry2<f32>) -> Isometry2<f32> {
         match key {
             PoseType::Absolute => {
                 self.absolute_buffer = Stamped(time, pose);
