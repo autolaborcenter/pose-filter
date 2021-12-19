@@ -1,7 +1,13 @@
 ﻿use crate::{isometry, point, vector, Isometry2, Point2};
 use chassis::ChassisModel;
 use nalgebra::Complex;
-use std::{cmp::Ordering::*, collections::VecDeque, f32::consts::PI, time::Duration};
+use rand::{thread_rng, Rng};
+use std::{
+    cmp::Ordering::*,
+    collections::VecDeque,
+    f32::consts::{FRAC_PI_8, PI},
+    time::Duration,
+};
 
 #[derive(Clone)]
 pub struct Particle<M> {
@@ -14,7 +20,7 @@ pub struct Particle<M> {
 pub struct ParticleFilter<M: ChassisModel> {
     pub parameters: ParticleFilterParameters<M>,
 
-    absolute_buffer: (Duration, Point2<f32>),
+    absolute_buffer: Option<(Duration, Point2<f32>)>,
     reletive_queue: VecDeque<(Duration, <M as ChassisModel>::Measure)>,
 
     particles: Vec<Particle<M>>,
@@ -34,7 +40,7 @@ impl<M: ChassisModel> ParticleFilter<M> {
         Self {
             parameters,
 
-            absolute_buffer: (Duration::ZERO, point(0.0, 0.0)),
+            absolute_buffer: None,
             reletive_queue: VecDeque::new(),
 
             particles: Vec::new(),
@@ -49,7 +55,7 @@ where
 {
     #[inline]
     pub fn measure(&mut self, time: Duration, p: Point2<f32>) {
-        self.absolute_buffer = (time, p);
+        self.absolute_buffer = Some((time, p));
         self.calculate0();
     }
 
@@ -65,7 +71,12 @@ where
     }
 
     pub fn get(&self) -> Isometry2<f32> {
-        let mut particles = self.particles.clone();
+        let mut particles = self
+            .particles
+            .iter()
+            .take_while(|p| p.weight > 0.0)
+            .cloned()
+            .collect::<Vec<_>>();
         for (_, m) in self.reletive_queue.iter().rev() {
             for particle in particles.iter_mut() {
                 particle.pose *= particle.model.measure(&m).to_odometry().pose;
@@ -85,8 +96,11 @@ where
     }
 
     fn calculate0(&mut self) {
+        let (t, measure) = match self.absolute_buffer.take() {
+            Some(pair) => pair,
+            None => return,
+        };
         let mut save = None;
-        let (t, measure) = self.absolute_buffer;
         while let Some((t1, m)) = self.reletive_queue.pop_back() {
             match t1.cmp(&t) {
                 Less => {
@@ -103,15 +117,15 @@ where
                     break;
                 }
                 Greater => {
-                    self.reletive_queue.push_back((t1, m));
-                    if let Some((t0, _)) = save {
+                    save = if let Some((t0, _)) = save {
                         let k = (t - t0).as_secs_f32() / (t1 - t0).as_secs_f32();
-                        save = Some((t, m * (1.0 - k)));
                         for particle in self.particles.iter_mut() {
-                            let delta = particle.model.measure(&m) * k;
-                            particle.pose *= delta.pose;
+                            particle.pose *= (particle.model.measure(&m) * k).pose;
                         }
-                    }
+                        Some((t1, m * (1.0 - k)))
+                    } else {
+                        Some((t1, m))
+                    };
                     break;
                 }
             }
@@ -119,6 +133,7 @@ where
         if let Some(pair) = save {
             self.reletive_queue.push_back(pair);
 
+            let mut w = 0.0;
             let mut p = vector(0.0, 0.0);
             let mut d = Complex { re: 0.0, im: 0.0 };
             let mut j = 0;
@@ -128,24 +143,49 @@ where
                 let diff = (beacon - measure).norm() / self.parameters.max_inconsistency;
                 if diff < 1.0 {
                     particle.age += 1;
-                } else {
-                    particle.age -= 1;
-                }
-                if particle.age > 0 {
                     particle.weight = particle.age as f32 * (1.0 - diff);
+                    w += particle.weight;
                     p += particle.pose.translation.vector * particle.weight;
                     d += particle.pose.rotation.complex() * particle.weight;
+                } else {
+                    particle.age /= 2;
+                    particle.weight = 0.0;
+                }
+                if particle.age > 0 {
                     if i > j {
                         unsafe { *self.particles.get_unchecked_mut(j) = particle.clone() };
                     }
                     j += 1;
                 }
             }
-            self.particles.truncate(j);
             if j == 0 {
                 self.particles = self.parameters.initialize(measure);
             } else {
-                // todo
+                self.particles.truncate(j);
+                self.particles
+                    .sort_unstable_by(|a, b| b.weight.partial_cmp(&a.weight).unwrap());
+                if j < self.parameters.count {
+                    let total = (self.parameters.count - j) as f32 / w;
+                    let mut rng = thread_rng();
+                    for i in 0..j {
+                        let particle = self.particles[i].clone();
+                        let n = (particle.weight * total).round() as isize;
+                        if n <= 0 {
+                            break;
+                        }
+                        for _ in 0..n {
+                            let dx = rng.gen_range(-0.03..0.03);
+                            let dy = rng.gen_range(-0.03..0.03);
+                            let (sin, cos) = rng.gen_range(-FRAC_PI_8..FRAC_PI_8).sin_cos();
+                            self.particles.push(Particle {
+                                model: particle.model.clone(),
+                                pose: particle.pose * isometry(dx, dy, cos, sin),
+                                age: particle.age / 2 + 1,
+                                weight: 0.0,
+                            });
+                        }
+                    }
+                }
             }
         }
     }
