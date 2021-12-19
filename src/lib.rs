@@ -32,10 +32,3 @@ const fn vector(x: f32, y: f32) -> Vector2<f32> {
     use nalgebra::{ArrayStorage, OVector};
     OVector::from_array_storage(ArrayStorage([[x, y]]))
 }
-
-#[inline]
-const fn point(x: f32, y: f32) -> Point2<f32> {
-    Point2 {
-        coords: vector(x, y),
-    }
-}

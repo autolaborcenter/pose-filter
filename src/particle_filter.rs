@@ -1,4 +1,4 @@
-﻿use crate::{isometry, point, vector, Isometry2, Point2};
+﻿use crate::{isometry, vector, Isometry2, Point2};
 use chassis::ChassisModel;
 use nalgebra::Complex;
 use rand::{thread_rng, Rng};
@@ -13,7 +13,6 @@ use std::{
 pub struct Particle<M> {
     pub model: M,
     pub pose: Isometry2<f32>,
-    pub age: usize,
     pub weight: f32,
 }
 
@@ -27,7 +26,8 @@ pub struct ParticleFilter<M: ChassisModel> {
 }
 
 pub struct ParticleFilterParameters<M> {
-    pub default_model: M,
+    pub memory_rate: f32,             // 权重的滤波器系数
+    pub default_model: M,             // 用于初始化的底盘模型
     pub count: usize,                 // 固定的粒子数量
     pub measure_weight: f32,          // 基本测量权重
     pub beacon_on_robot: Point2<f32>, // 定位信标在机器人坐标系上的位置
@@ -56,13 +56,13 @@ where
     #[inline]
     pub fn measure(&mut self, time: Duration, p: Point2<f32>) {
         self.absolute_buffer = Some((time, p));
-        self.calculate0();
+        self.calculate();
     }
 
     #[inline]
     pub fn update(&mut self, time: Duration, measure: <M as ChassisModel>::Measure) {
         self.reletive_queue.push_front((time, measure));
-        self.calculate0();
+        self.calculate();
     }
 
     #[inline]
@@ -95,7 +95,7 @@ where
         isometry(p[0], p[1], d.re, d.im)
     }
 
-    fn calculate0(&mut self) {
+    fn calculate(&mut self) {
         let (t, measure) = match self.absolute_buffer.take() {
             Some(pair) => pair,
             None => return,
@@ -138,20 +138,17 @@ where
             let mut d = Complex { re: 0.0, im: 0.0 };
             let mut j = 0;
             for i in 0..self.particles.len() {
-                let mut particle = unsafe { self.particles.get_unchecked_mut(i) };
+                let particle = unsafe { self.particles.get_unchecked_mut(i) };
                 let beacon = particle.pose * self.parameters.beacon_on_robot;
-                let diff = (beacon - measure).norm() / self.parameters.max_inconsistency;
-                if diff < 1.0 {
-                    particle.age += 1;
-                    particle.weight = particle.age as f32 * (1.0 - diff);
+                let diff = f32::min(
+                    (beacon - measure).norm() / self.parameters.max_inconsistency,
+                    1.0,
+                );
+                particle.weight = self.parameters.update_weight(particle.weight, diff);
+                if particle.weight > 0.1 {
                     w += particle.weight;
                     p += particle.pose.translation.vector * particle.weight;
                     d += particle.pose.rotation.complex() * particle.weight;
-                } else {
-                    particle.age /= 2;
-                    particle.weight = 0.0;
-                }
-                if particle.age > 0 {
                     if i > j {
                         unsafe { *self.particles.get_unchecked_mut(j) = particle.clone() };
                     }
@@ -162,8 +159,8 @@ where
                 self.particles = self.parameters.initialize(measure);
             } else {
                 self.particles.truncate(j);
-                self.particles
-                    .sort_unstable_by(|a, b| b.weight.partial_cmp(&a.weight).unwrap());
+                // self.particles
+                //     .sort_unstable_by(|a, b| b.weight.partial_cmp(&a.weight).unwrap());
                 if j < self.parameters.count {
                     let total = (self.parameters.count - j) as f32 / w;
                     let mut rng = thread_rng();
@@ -180,8 +177,7 @@ where
                             self.particles.push(Particle {
                                 model: particle.model.clone(),
                                 pose: particle.pose * isometry(dx, dy, cos, sin),
-                                age: particle.age / 2 + 1,
-                                weight: 0.0,
+                                weight: self.parameters.update_weight(particle.weight, 1.0),
                             });
                         }
                     }
@@ -192,6 +188,11 @@ where
 }
 
 impl<M: Clone> ParticleFilterParameters<M> {
+    #[inline]
+    fn update_weight(&self, w: f32, diff: f32) -> f32 {
+        w * self.memory_rate + (1.0 - diff) * (1.0 - self.memory_rate)
+    }
+
     /// 初始化一组粒子
     fn initialize(&self, measure: Point2<f32>) -> Vec<Particle<M>> {
         let robot_on_beacon =
@@ -203,8 +204,7 @@ impl<M: Clone> ParticleFilterParameters<M> {
                 Particle {
                     model: self.default_model.clone(),
                     pose: isometry(measure[0], measure[1], cos, sin) * robot_on_beacon,
-                    age: 1,
-                    weight: 1.0,
+                    weight: 0.1 / self.memory_rate.powi(2),
                 }
             })
             .collect()
