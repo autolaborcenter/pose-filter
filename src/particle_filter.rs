@@ -16,13 +16,14 @@ pub struct Particle<M> {
     pub weight: f32,
 }
 
-pub struct ParticleFilter<M: ChassisModel> {
+pub struct ParticleFilter<M: ChassisModel, F> {
     pub parameters: ParticleFilterParameters<M>,
 
     absolute_buffer: Option<(Duration, Point2<f32>)>,
     reletive_queue: VecDeque<(Duration, <M as ChassisModel>::Measure)>,
 
     particles: Vec<Particle<M>>,
+    f: F,
 }
 
 pub struct ParticleFilterParameters<M> {
@@ -34,9 +35,9 @@ pub struct ParticleFilterParameters<M> {
     pub max_inconsistency: f32,       // 定位位置变化与估计位置变化允许的最大差距
 }
 
-impl<M: ChassisModel> ParticleFilter<M> {
+impl<M: ChassisModel, F: Fn(&M, f32, usize) -> Vec<M>> ParticleFilter<M, F> {
     #[inline]
-    pub fn new(parameters: ParticleFilterParameters<M>) -> Self {
+    pub fn new(parameters: ParticleFilterParameters<M>, f: F) -> Self {
         Self {
             parameters,
 
@@ -44,14 +45,16 @@ impl<M: ChassisModel> ParticleFilter<M> {
             reletive_queue: VecDeque::new(),
 
             particles: Vec::new(),
+            f,
         }
     }
 }
 
-impl<M> ParticleFilter<M>
+impl<M, F> ParticleFilter<M, F>
 where
     M: Clone + ChassisModel,
     M::Measure: Copy + std::ops::Mul<f32, Output = M::Measure>,
+    F: Fn(&M, f32, usize) -> Vec<M>,
 {
     #[inline]
     pub fn measure(&mut self, time: Duration, p: Point2<f32>) {
@@ -159,25 +162,30 @@ where
                 self.particles = self.parameters.initialize(measure);
             } else {
                 self.particles.truncate(j);
-                // self.particles
-                //     .sort_unstable_by(|a, b| b.weight.partial_cmp(&a.weight).unwrap());
+                self.particles
+                    .sort_unstable_by(|a, b| b.weight.partial_cmp(&a.weight).unwrap());
                 if j < self.parameters.count {
                     let total = (self.parameters.count - j) as f32 / w;
                     let mut rng = thread_rng();
                     for i in 0..j {
-                        let particle = self.particles[i].clone();
-                        let n = (particle.weight * total).round() as isize;
+                        let Particle {
+                            model,
+                            pose,
+                            weight,
+                        } = self.particles[i].clone();
+                        let n = (weight * total).round() as isize;
                         if n <= 0 {
                             break;
                         }
+                        let mut models = (self.f)(&model, weight, n as usize);
                         for _ in 0..n {
                             let dx = rng.gen_range(-0.03..0.03);
                             let dy = rng.gen_range(-0.03..0.03);
                             let (sin, cos) = rng.gen_range(-FRAC_PI_8..FRAC_PI_8).sin_cos();
                             self.particles.push(Particle {
-                                model: particle.model.clone(),
-                                pose: particle.pose * isometry(dx, dy, cos, sin),
-                                weight: self.parameters.update_weight(particle.weight, 1.0),
+                                model: models.pop().unwrap(),
+                                pose: pose * isometry(dx, dy, cos, sin),
+                                weight: self.parameters.update_weight(weight, 1.0),
                             });
                         }
                     }
@@ -188,6 +196,7 @@ where
 }
 
 impl<M: Clone> ParticleFilterParameters<M> {
+    /// 用低通滤波更新权重
     #[inline]
     fn update_weight(&self, w: f32, diff: f32) -> f32 {
         w * self.memory_rate + (1.0 - diff) * (1.0 - self.memory_rate)
