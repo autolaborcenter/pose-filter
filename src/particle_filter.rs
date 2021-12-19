@@ -1,51 +1,52 @@
-﻿use nalgebra::Complex;
-use rand::{thread_rng, Rng};
+﻿use crate::{isometry, point, vector, Isometry2, Point2};
+use chassis::ChassisModel;
+use nalgebra::Complex;
+use std::{cmp::Ordering::*, collections::VecDeque, f32::consts::PI, time::Duration};
 
-use crate::{isometry, point, vector, Isometry2, Point2};
-use std::{
-    cmp::Ordering::*,
-    collections::{HashSet, VecDeque},
-    f32::consts::{FRAC_PI_6, PI},
-    time::Duration,
-};
-
-pub struct ParticleFilter {
-    parameters: ParticleFilterParameters,
-
-    transformation: Isometry2<f32>,
-
-    absolute_buffer: (Duration, Point2<f32>),
-    reletive_queue: VecDeque<(Duration, Isometry2<f32>)>,
-
-    last_pair: Option<(Point2<f32>, Isometry2<f32>)>,
-    particles: Vec<(Isometry2<f32>, usize)>,
+#[derive(Clone)]
+pub struct Particle<M> {
+    pub model: M,
+    pub pose: Isometry2<f32>,
+    pub age: usize,
+    pub weight: f32,
 }
 
-pub struct ParticleFilterParameters {
+pub struct ParticleFilter<M: ChassisModel> {
+    pub parameters: ParticleFilterParameters<M>,
+
+    absolute_buffer: (Duration, Point2<f32>),
+    reletive_queue: VecDeque<(Duration, <M as ChassisModel>::Measure)>,
+
+    particles: Vec<Particle<M>>,
+}
+
+pub struct ParticleFilterParameters<M> {
+    pub default_model: M,
     pub count: usize,                 // 固定的粒子数量
     pub measure_weight: f32,          // 基本测量权重
     pub beacon_on_robot: Point2<f32>, // 定位信标在机器人坐标系上的位置
     pub max_inconsistency: f32,       // 定位位置变化与估计位置变化允许的最大差距
 }
 
-impl ParticleFilter {
+impl<M: ChassisModel> ParticleFilter<M> {
     #[inline]
-    pub fn new(parameters: ParticleFilterParameters) -> Self {
+    pub fn new(parameters: ParticleFilterParameters<M>) -> Self {
         Self {
             parameters,
-
-            transformation: isometry(0.0, 0.0, 1.0, 0.0),
 
             absolute_buffer: (Duration::ZERO, point(0.0, 0.0)),
             reletive_queue: VecDeque::new(),
 
-            last_pair: None,
             particles: Vec::new(),
         }
     }
 }
 
-impl ParticleFilter {
+impl<M> ParticleFilter<M>
+where
+    M: Clone + ChassisModel,
+    M::Measure: Copy + std::ops::Mul<f32, Output = M::Measure>,
+{
     #[inline]
     pub fn measure(&mut self, time: Duration, p: Point2<f32>) {
         self.absolute_buffer = (time, p);
@@ -53,43 +54,63 @@ impl ParticleFilter {
     }
 
     #[inline]
-    pub fn update(&mut self, time: Duration, pose: Isometry2<f32>) {
-        self.reletive_queue.push_front((time, pose));
+    pub fn update(&mut self, time: Duration, measure: <M as ChassisModel>::Measure) {
+        self.reletive_queue.push_front((time, measure));
         self.calculate0();
     }
 
     #[inline]
-    pub fn particles<'a>(&'a self) -> &'a [(Isometry2<f32>, usize)] {
+    pub fn particles<'a>(&'a self) -> &'a [Particle<M>] {
         self.particles.as_slice()
     }
 
-    #[inline]
-    pub fn transform(&self, pose: Isometry2<f32>) -> Isometry2<f32> {
-        self.transformation * pose
+    pub fn get(&self) -> Isometry2<f32> {
+        let mut particles = self.particles.clone();
+        for (_, m) in self.reletive_queue.iter().rev() {
+            for particle in particles.iter_mut() {
+                particle.pose *= particle.model.measure(&m).to_odometry().pose;
+            }
+        }
+        let mut weight = 0.0;
+        let mut p = vector(0.0, 0.0);
+        let mut d = Complex { re: 0.0, im: 0.0 };
+        for particle in particles {
+            weight += particle.weight;
+            p += particle.pose.translation.vector * particle.weight;
+            d += particle.pose.rotation.complex() * particle.weight;
+        }
+        p /= weight;
+        d /= weight;
+        isometry(p[0], p[1], d.re, d.im)
     }
 
     fn calculate0(&mut self) {
-        fn interpolate(p0: &Isometry2<f32>, p1: &Isometry2<f32>, k: f32) -> Isometry2<f32> {
-            let d = p0.inverse() * p1;
-            let v = d.translation.vector * k;
-            let a = d.rotation.angle() * k;
-            p0 * Isometry2::new(v, a)
-        }
-
         let mut save = None;
-        let t = self.absolute_buffer.0;
-        while let Some((t1, p1)) = self.reletive_queue.pop_back() {
-            let last = save.replace((t1, p1));
+        let (t, measure) = self.absolute_buffer;
+        while let Some((t1, m)) = self.reletive_queue.pop_back() {
             match t1.cmp(&t) {
-                Less => {}
+                Less => {
+                    save = Some((t1, m));
+                    for particle in self.particles.iter_mut() {
+                        particle.pose *= particle.model.measure(&m).to_odometry().pose;
+                    }
+                }
                 Equal => {
-                    self.calculate1(p1);
+                    save = Some((t1, m));
+                    for particle in self.particles.iter_mut() {
+                        particle.pose *= particle.model.measure(&m).to_odometry().pose;
+                    }
                     break;
                 }
                 Greater => {
-                    if let Some((t0, p0)) = last {
+                    self.reletive_queue.push_back((t1, m));
+                    if let Some((t0, _)) = save {
                         let k = (t - t0).as_secs_f32() / (t1 - t0).as_secs_f32();
-                        self.calculate1(interpolate(&p0, &p1, k));
+                        save = Some((t, m * (1.0 - k)));
+                        for particle in self.particles.iter_mut() {
+                            let delta = particle.model.measure(&m) * k;
+                            particle.pose *= delta.pose;
+                        }
                     }
                     break;
                 }
@@ -97,92 +118,54 @@ impl ParticleFilter {
         }
         if let Some(pair) = save {
             self.reletive_queue.push_back(pair);
-        }
-    }
 
-    #[inline]
-    fn initialize(&mut self) {
-        let (measure, _) = self.last_pair.unwrap();
-        self.particles = self.parameters.initialize(measure);
-    }
-
-    fn calculate1(&mut self, pose: Isometry2<f32>) {
-        let measure = self.absolute_buffer.1;
-        match self.last_pair.replace((measure, pose)) {
-            Some((m, p)) => {
-                // 推动粒子
-                let delta = p.inv_mul(&pose);
-                self.particles
-                    .iter_mut()
-                    .for_each(|(pose, _)| *pose *= delta);
-                // 计算测量权重
-                let measure_weight = self.parameters.measure_weight((measure - m).norm(), delta);
-                if measure_weight > 0.0 {
-                    let mut to_reset = HashSet::new();
-                    let mut weight = 0.0;
-                    let mut p = vector(0.0, 0.0);
-                    let mut d = Complex { re: 0.0, im: 0.0 };
-                    for (i, (pose, age)) in self.particles.iter_mut().enumerate() {
-                        let beacon = *pose * self.parameters.beacon_on_robot;
-                        let diff = (beacon - measure).norm() / self.parameters.max_inconsistency;
-                        if diff < 1.0 {
-                            *age = std::cmp::min(*age + 1, 20);
-                            let w = *age as f32 * (1.0 - diff);
-                            weight += w;
-                            p += pose.translation.vector * w;
-                            d += pose.rotation.complex() * w;
-                        } else if *age == 1 {
-                            to_reset.insert(i);
-                        } else {
-                            *age -= 1;
-                        }
+            let mut p = vector(0.0, 0.0);
+            let mut d = Complex { re: 0.0, im: 0.0 };
+            let mut j = 0;
+            for i in 0..self.particles.len() {
+                let mut particle = unsafe { self.particles.get_unchecked_mut(i) };
+                let beacon = particle.pose * self.parameters.beacon_on_robot;
+                let diff = (beacon - measure).norm() / self.parameters.max_inconsistency;
+                if diff < 1.0 {
+                    particle.age += 1;
+                } else {
+                    particle.age -= 1;
+                }
+                if particle.age > 0 {
+                    particle.weight = particle.age as f32 * (1.0 - diff);
+                    p += particle.pose.translation.vector * particle.weight;
+                    d += particle.pose.rotation.complex() * particle.weight;
+                    if i > j {
+                        unsafe { *self.particles.get_unchecked_mut(j) = particle.clone() };
                     }
-                    println!("Σ = {}", weight);
-                    if weight < 1.0 {
-                        self.particles = self.parameters.initialize(measure);
-                    } else {
-                        p /= weight;
-                        d /= weight;
-                        let angle = d.im.atan2(d.re);
-                        self.transformation = Isometry2::new(p, angle) * pose.inverse();
-                        let mut rng = thread_rng();
-                        for i in to_reset {
-                            self.particles[i].0 = Isometry2::new(
-                                vector(
-                                    p[0] + rng.gen_range(-0.05..0.05),
-                                    p[1] + rng.gen_range(-0.05..0.05),
-                                ),
-                                angle + rng.gen_range(-FRAC_PI_6..FRAC_PI_6),
-                            );
-                        }
-                    }
+                    j += 1;
                 }
             }
-            None => self.initialize(),
+            self.particles.truncate(j);
+            if j == 0 {
+                self.particles = self.parameters.initialize(measure);
+            } else {
+                // todo
+            }
         }
     }
 }
 
-impl ParticleFilterParameters {
-    /// 计算测量权重
-    #[inline]
-    fn measure_weight(&self, lm: f32, delta: Isometry2<f32>) -> f32 {
-        let lp = (delta * self.beacon_on_robot - self.beacon_on_robot).norm();
-        self.measure_weight * (1.0 - (lm - lp).abs() / self.max_inconsistency)
-    }
-
+impl<M: Clone> ParticleFilterParameters<M> {
     /// 初始化一组粒子
-    fn initialize(&self, measure: Point2<f32>) -> Vec<(Isometry2<f32>, usize)> {
+    fn initialize(&self, measure: Point2<f32>) -> Vec<Particle<M>> {
         let robot_on_beacon =
             isometry(-self.beacon_on_robot[0], -self.beacon_on_robot[1], 1.0, 0.0);
         let step = 2.0 * PI / self.count as f32;
         (0..self.count)
             .map(|i| {
                 let (sin, cos) = (i as f32 * step).sin_cos();
-                (
-                    isometry(measure[0], measure[1], cos, sin) * robot_on_beacon,
-                    1,
-                )
+                Particle {
+                    model: self.default_model.clone(),
+                    pose: isometry(measure[0], measure[1], cos, sin) * robot_on_beacon,
+                    age: 1,
+                    weight: 1.0,
+                }
             })
             .collect()
     }
