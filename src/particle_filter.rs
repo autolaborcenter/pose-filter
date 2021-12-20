@@ -1,6 +1,6 @@
 ﻿use crate::{isometry, vector, Isometry2, Point2};
 use chassis::ChassisModel;
-use nalgebra::Complex;
+use nalgebra::{Complex, Normed};
 use rand::{thread_rng, Rng};
 use std::{
     cmp::Ordering::*,
@@ -81,21 +81,36 @@ where
             .cloned()
             .collect::<Vec<_>>();
         for (_, m) in self.reletive_queue.iter().rev() {
-            for particle in particles.iter_mut() {
-                particle.pose *= particle.model.measure(&m).to_odometry().pose;
-            }
+            Self::move_particles(&mut particles, &m);
         }
         let mut weight = 0.0;
         let mut p = vector(0.0, 0.0);
         let mut d = Complex { re: 0.0, im: 0.0 };
-        for particle in particles {
-            weight += particle.weight;
-            p += particle.pose.translation.vector * particle.weight;
-            d += particle.pose.rotation.complex() * particle.weight;
+        for Particle {
+            model: _,
+            pose: Isometry2 {
+                translation,
+                rotation,
+            },
+            weight: w,
+        } in particles
+        {
+            weight += w;
+            p += translation.vector * w;
+            d += rotation.complex() * w;
         }
         p /= weight;
-        d /= weight;
+        d = Some(d.norm())
+            .filter(|n| n > &f32::EPSILON)
+            .map_or(Complex { re: 1.0, im: 0.0 }, |n| d / n);
         isometry(p[0], p[1], d.re, d.im)
+    }
+
+    #[inline]
+    fn move_particles(particles: &mut [Particle<M>], m: &M::Measure) {
+        for particle in particles.iter_mut() {
+            particle.pose *= particle.model.measure(m).to_odometry().pose;
+        }
     }
 
     fn calculate(&mut self) {
@@ -108,23 +123,17 @@ where
             match t1.cmp(&t) {
                 Less => {
                     save = Some((t1, m));
-                    for particle in self.particles.iter_mut() {
-                        particle.pose *= particle.model.measure(&m).to_odometry().pose;
-                    }
+                    Self::move_particles(&mut self.particles, &m);
                 }
                 Equal => {
                     save = Some((t1, m));
-                    for particle in self.particles.iter_mut() {
-                        particle.pose *= particle.model.measure(&m).to_odometry().pose;
-                    }
+                    Self::move_particles(&mut self.particles, &m);
                     break;
                 }
                 Greater => {
                     save = if let Some((t0, _)) = save {
                         let k = (t - t0).as_secs_f32() / (t1 - t0).as_secs_f32();
-                        for particle in self.particles.iter_mut() {
-                            particle.pose *= (particle.model.measure(&m) * k).pose;
-                        }
+                        Self::move_particles(&mut self.particles, &(m * k));
                         Some((t1, m * (1.0 - k)))
                     } else {
                         Some((t1, m))
