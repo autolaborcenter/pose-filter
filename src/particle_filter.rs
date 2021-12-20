@@ -35,7 +35,7 @@ pub struct ParticleFilterParameters<M> {
     pub max_inconsistency: f32,       // 定位位置变化与估计位置变化允许的最大差距
 }
 
-impl<M: ChassisModel, F: Fn(&M, f32, usize) -> Vec<M>> ParticleFilter<M, F> {
+impl<M: ChassisModel, F: FnMut(&M, f32, usize) -> Vec<M>> ParticleFilter<M, F> {
     #[inline]
     pub fn new(parameters: ParticleFilterParameters<M>, f: F) -> Self {
         Self {
@@ -54,7 +54,7 @@ impl<M, F> ParticleFilter<M, F>
 where
     M: Clone + ChassisModel,
     M::Measure: Copy + std::ops::Mul<f32, Output = M::Measure>,
-    F: Fn(&M, f32, usize) -> Vec<M>,
+    F: FnMut(&M, f32, usize) -> Vec<M>,
 {
     #[inline]
     pub fn measure(&mut self, time: Duration, p: Point2<f32>) {
