@@ -1,20 +1,11 @@
 ﻿use nalgebra::{Isometry2, Point2, Vector2};
-use std::time::Duration;
 
 // mod derecorder;
 mod interpolation_filter;
 mod particle_filter;
 
 pub use interpolation_filter::{InterpolationFilter, PoseType};
-pub use particle_filter::{ParticleFilter, ParticleFilterParameters};
-
-struct Stamped<T>(Duration, T);
-
-type Particle = Stamped<Isometry2<f32>>;
-
-pub trait PoseFilter<Key> {
-    fn update(&mut self, key: Key, time: Duration, pose: Isometry2<f32>) -> Isometry2<f32>;
-}
+pub use particle_filter::{Particle, ParticleFilter, ParticleFilterParameters};
 
 #[inline]
 const fn isometry(x: f32, y: f32, cos: f32, sin: f32) -> Isometry2<f32> {

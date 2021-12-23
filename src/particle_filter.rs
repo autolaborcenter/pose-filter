@@ -9,30 +9,34 @@ use std::{
     time::Duration,
 };
 
-#[derive(Clone)]
-pub struct Particle<M> {
-    pub model: M,
-    pub pose: Isometry2<f32>,
-    pub weight: f32,
-}
-
+/// 粒子滤波器
 pub struct ParticleFilter<M: ChassisModel, F> {
     pub parameters: ParticleFilterParameters<M>,
 
-    absolute_buffer: Option<(Duration, Point2<f32>)>,
-    reletive_queue: VecDeque<(Duration, <M as ChassisModel>::Measure)>,
+    absolute: Option<(Duration, Point2<f32>)>,
+    incremental: VecDeque<(Duration, <M as ChassisModel>::Measure)>,
 
     particles: Vec<Particle<M>>,
     f: F,
 }
 
+/// 粒子
+#[derive(Clone)]
+pub struct Particle<M> {
+    pub pose: Isometry2<f32>, // 位姿
+    pub model: M,             // 用于将控制/测量转化为位姿增量的模型
+    pub weight: f32,          // 经异构传感器验证得到的权重
+}
+
+/// 滤波器参数
 pub struct ParticleFilterParameters<M> {
-    pub memory_rate: f32,             // 权重的滤波器系数
-    pub default_model: M,             // 用于初始化的底盘模型
-    pub count: usize,                 // 固定的粒子数量
-    pub measure_weight: f32,          // 基本测量权重
-    pub beacon_on_robot: Point2<f32>, // 定位信标在机器人坐标系上的位置
-    pub max_inconsistency: f32,       // 定位位置变化与估计位置变化允许的最大差距
+    pub incremental_timeout: Duration, // 增量队列最大长度
+    pub memory_rate: f32,              // 权重的滤波器系数
+    pub default_model: M,              // 用于初始化的底盘模型
+    pub count: usize,                  // 固定的粒子数量
+    pub measure_weight: f32,           // 基本测量权重
+    pub beacon_on_robot: Point2<f32>,  // 定位信标在机器人坐标系上的位置
+    pub max_inconsistency: f32,        // 定位位置变化与估计位置变化允许的最大差距
 }
 
 impl<M: ChassisModel, F: FnMut(&M, f32, usize) -> Vec<M>> ParticleFilter<M, F> {
@@ -41,8 +45,8 @@ impl<M: ChassisModel, F: FnMut(&M, f32, usize) -> Vec<M>> ParticleFilter<M, F> {
         Self {
             parameters,
 
-            absolute_buffer: None,
-            reletive_queue: VecDeque::new(),
+            absolute: None,
+            incremental: VecDeque::new(),
 
             particles: Vec::new(),
             f,
@@ -56,23 +60,38 @@ where
     M::Measure: Copy + std::ops::Mul<f32, Output = M::Measure>,
     F: FnMut(&M, f32, usize) -> Vec<M>,
 {
+    /// 保存一个绝对位置
     #[inline]
     pub fn measure(&mut self, time: Duration, p: Point2<f32>) {
-        self.absolute_buffer = Some((time, p));
+        self.absolute = Some((time, p));
         self.calculate();
     }
 
+    /// 保存一个位姿增量
     #[inline]
-    pub fn update(&mut self, time: Duration, measure: <M as ChassisModel>::Measure) {
-        self.reletive_queue.push_front((time, measure));
+    pub fn update(&mut self, time: Duration, i: <M as ChassisModel>::Measure) {
+        self.incremental.push_front((time, i));
         self.calculate();
+        // 超时的更新记录直接应用于粒子并移除
+        if let Some(deadline) = time.checked_sub(self.parameters.incremental_timeout) {
+            while let Some((t, m)) = self.incremental.back() {
+                if t <= &deadline {
+                    Self::move_particles(&mut self.particles, m);
+                    self.incremental.pop_back();
+                } else {
+                    break;
+                }
+            }
+        }
     }
 
+    /// 查看粒子
     #[inline]
     pub fn particles<'a>(&'a self) -> &'a [Particle<M>] {
         self.particles.as_slice()
     }
 
+    /// 估计当前位姿
     pub fn get(&self) -> Isometry2<f32> {
         let mut particles = self
             .particles
@@ -80,7 +99,7 @@ where
             .take_while(|p| p.weight > 0.0)
             .cloned()
             .collect::<Vec<_>>();
-        for (_, m) in self.reletive_queue.iter().rev() {
+        for (_, m) in self.incremental.iter().rev() {
             Self::move_particles(&mut particles, &m);
         }
         let mut weight = 0.0;
@@ -106,6 +125,7 @@ where
         isometry(p[0], p[1], d.re, d.im)
     }
 
+    /// 使用一个增量移动所有粒子
     #[inline]
     fn move_particles(particles: &mut [Particle<M>], m: &M::Measure) {
         for particle in particles.iter_mut() {
@@ -113,13 +133,14 @@ where
         }
     }
 
+    /// 计算粒子权重
     fn calculate(&mut self) {
-        let (t, measure) = match self.absolute_buffer.take() {
+        let (t, measure) = match self.absolute.take() {
             Some(pair) => pair,
             None => return,
         };
         let mut save = None;
-        while let Some((t1, m)) = self.reletive_queue.pop_back() {
+        while let Some((t1, m)) = self.incremental.pop_back() {
             match t1.cmp(&t) {
                 Less => {
                     save = Some((t1, m));
@@ -143,7 +164,7 @@ where
             }
         }
         if let Some(pair) = save {
-            self.reletive_queue.push_back(pair);
+            self.incremental.push_back(pair);
 
             let mut w = 0.0;
             let mut p = vector(0.0, 0.0);
@@ -220,8 +241,8 @@ impl<M: Clone> ParticleFilterParameters<M> {
             .map(|i| {
                 let (sin, cos) = (i as f32 * step).sin_cos();
                 Particle {
-                    model: self.default_model.clone(),
                     pose: isometry(measure[0], measure[1], cos, sin) * robot_on_beacon,
+                    model: self.default_model.clone(),
                     weight: 0.1 / self.memory_rate.powi(2),
                 }
             })
