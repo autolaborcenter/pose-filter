@@ -1,9 +1,11 @@
 ﻿use nalgebra::{Isometry2, Point2, Vector2};
 
 // mod derecorder;
+mod gaussian;
 mod interpolation_filter;
 mod particle_filter;
 
+pub use gaussian::Gaussian;
 pub use interpolation_filter::{InterpolationFilter, PoseType};
 pub use particle_filter::{Particle, ParticleFilter, ParticleFilterParameters};
 

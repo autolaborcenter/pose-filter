@@ -1,11 +1,10 @@
-﻿use crate::{isometry, vector, Isometry2, Point2};
+﻿use crate::{isometry, vector, Gaussian, Isometry2, Point2};
 use chassis::ChassisModel;
 use nalgebra::{Complex, Normed};
-use rand::{thread_rng, Rng};
 use std::{
     cmp::Ordering::*,
     collections::VecDeque,
-    f32::consts::{FRAC_PI_8, PI},
+    f32::consts::{FRAC_PI_4, PI},
     time::Duration,
 };
 
@@ -196,7 +195,8 @@ where
                     .sort_unstable_by(|a, b| b.weight.partial_cmp(&a.weight).unwrap());
                 if j < self.parameters.count {
                     let total = (self.parameters.count - j) as f32 / w;
-                    let mut rng = thread_rng();
+                    let mut gaussian =
+                        Gaussian::new(0.0, 1.0 - j as f32 / self.parameters.count as f32);
                     for i in 0..j {
                         let Particle {
                             model,
@@ -209,9 +209,9 @@ where
                         }
                         let mut models = (self.f)(&model, weight, n as usize);
                         for _ in 0..n {
-                            let dx = rng.gen_range(-0.03..0.03);
-                            let dy = rng.gen_range(-0.03..0.03);
-                            let (sin, cos) = rng.gen_range(-FRAC_PI_8..FRAC_PI_8).sin_cos();
+                            let dx = gaussian.next() * 0.1;
+                            let dy = gaussian.next() * 0.1;
+                            let (sin, cos) = (gaussian.next() * FRAC_PI_4).sin_cos();
                             self.particles.push(Particle {
                                 model: models.pop().unwrap(),
                                 pose: pose * isometry(dx, dy, cos, sin),
