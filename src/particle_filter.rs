@@ -1,4 +1,4 @@
-﻿use crate::{isometry, vector, Gaussian, Isometry2, Point2};
+﻿use crate::{gaussian, isometry, vector, Isometry2, Point2};
 use chassis::ChassisModel;
 use nalgebra::{Complex, Normed};
 use std::{
@@ -38,7 +38,7 @@ pub struct ParticleFilterParameters<M> {
     pub max_inconsistency: f32,        // 定位位置变化与估计位置变化允许的最大差距
 }
 
-impl<M: ChassisModel, F: FnMut(&M, f32, usize) -> Vec<M>> ParticleFilter<M, F> {
+impl<M: ChassisModel, F: FnMut(&M, f32) -> M> ParticleFilter<M, F> {
     #[inline]
     pub fn new(parameters: ParticleFilterParameters<M>, f: F) -> Self {
         Self {
@@ -57,7 +57,7 @@ impl<M, F> ParticleFilter<M, F>
 where
     M: Clone + ChassisModel,
     M::Measure: Copy + std::ops::Mul<f32, Output = M::Measure>,
-    F: FnMut(&M, f32, usize) -> Vec<M>,
+    F: FnMut(&M, f32) -> M,
 {
     /// 保存一个绝对位置
     #[inline]
@@ -195,8 +195,7 @@ where
                     .sort_unstable_by(|a, b| b.weight.partial_cmp(&a.weight).unwrap());
                 if j < self.parameters.count {
                     let total = (self.parameters.count - j) as f32 / w;
-                    let mut gaussian =
-                        Gaussian::new(0.0, 1.0 - j as f32 / self.parameters.count as f32);
+                    let sigma = 1.0 - j as f32 / self.parameters.count as f32;
                     for i in 0..j {
                         let Particle {
                             model,
@@ -207,13 +206,12 @@ where
                         if n <= 0 {
                             break;
                         }
-                        let mut models = (self.f)(&model, weight, n as usize);
                         for _ in 0..n {
-                            let dx = gaussian.next() * 0.1;
-                            let dy = gaussian.next() * 0.1;
-                            let (sin, cos) = (gaussian.next() * FRAC_PI_4).sin_cos();
+                            let dx = gaussian() * sigma * 0.1;
+                            let dy = gaussian() * sigma * 0.1;
+                            let (sin, cos) = (gaussian() * sigma * FRAC_PI_4).sin_cos();
                             self.particles.push(Particle {
-                                model: models.pop().unwrap(),
+                                model: (self.f)(&model, weight),
                                 pose: pose * isometry(dx, dy, cos, sin),
                                 weight: self.parameters.update_weight(weight, 1.0),
                             });
