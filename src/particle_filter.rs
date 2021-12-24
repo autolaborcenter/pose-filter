@@ -91,7 +91,10 @@ where
     }
 
     /// 估计当前位姿
-    pub fn get(&self) -> Isometry2<f32> {
+    pub fn get(&self) -> Option<Isometry2<f32>> {
+        if self.particles.is_empty() {
+            return None;
+        }
         let mut particles = self
             .particles
             .iter()
@@ -117,11 +120,15 @@ where
             p += translation.vector * w;
             d += rotation.complex() * w;
         }
-        p /= weight;
-        d = Some(d.norm())
-            .filter(|n| n > &f32::EPSILON)
-            .map_or(Complex { re: 1.0, im: 0.0 }, |n| d / n);
-        isometry(p[0], p[1], d.re, d.im)
+        if weight.is_normal() {
+            p /= weight;
+            d = Some(d.norm())
+                .filter(|n| n > &f32::EPSILON)
+                .map_or(Complex { re: 1.0, im: 0.0 }, |n| d / n);
+            Some(isometry(p[0], p[1], d.re, d.im))
+        } else {
+            None
+        }
     }
 
     /// 使用一个增量移动所有粒子
@@ -164,58 +171,63 @@ where
         }
         if let Some(pair) = save {
             self.incremental.push_back(pair);
-
-            let mut w = 0.0;
-            let mut p = vector(0.0, 0.0);
-            let mut d = Complex { re: 0.0, im: 0.0 };
-            let mut j = 0;
-            for i in 0..self.particles.len() {
-                let particle = unsafe { self.particles.get_unchecked_mut(i) };
-                let beacon = particle.pose * self.parameters.beacon_on_robot;
-                let diff = f32::min(
-                    (beacon - measure).norm() / self.parameters.max_inconsistency,
-                    1.0,
-                );
-                particle.weight = self.parameters.update_weight(particle.weight, diff);
-                if particle.weight > 0.1 {
-                    w += particle.weight;
-                    p += particle.pose.translation.vector * particle.weight;
-                    d += particle.pose.rotation.complex() * particle.weight;
-                    if i > j {
-                        unsafe { *self.particles.get_unchecked_mut(j) = particle.clone() };
-                    }
-                    j += 1;
-                }
-            }
-            if j == 0 {
+        } else {
+            if self.particles.is_empty() {
                 self.particles = self.parameters.initialize(measure);
-            } else {
-                self.particles.truncate(j);
-                self.particles
-                    .sort_unstable_by(|a, b| b.weight.partial_cmp(&a.weight).unwrap());
-                if j < self.parameters.count {
-                    let total = (self.parameters.count - j) as f32 / w;
-                    let sigma = 1.0 - j as f32 / self.parameters.count as f32;
-                    for i in 0..j {
-                        let Particle {
-                            model,
-                            pose,
-                            weight,
-                        } = self.particles[i].clone();
-                        let n = (weight * total).round() as isize;
-                        if n <= 0 {
-                            break;
-                        }
-                        for _ in 0..n {
-                            let dx = gaussian() * sigma * 0.1;
-                            let dy = gaussian() * sigma * 0.1;
-                            let (sin, cos) = (gaussian() * sigma * FRAC_PI_4).sin_cos();
-                            self.particles.push(Particle {
-                                model: (self.f)(&model, weight),
-                                pose: pose * isometry(dx, dy, cos, sin),
-                                weight: self.parameters.update_weight(weight, 1.0),
-                            });
-                        }
+            }
+            return;
+        }
+
+        let mut w = 0.0;
+        let mut p = vector(0.0, 0.0);
+        let mut d = Complex { re: 0.0, im: 0.0 };
+        let mut j = 0;
+        for i in 0..self.particles.len() {
+            let particle = unsafe { self.particles.get_unchecked_mut(i) };
+            let beacon = particle.pose * self.parameters.beacon_on_robot;
+            let diff = f32::min(
+                (beacon - measure).norm() / self.parameters.max_inconsistency,
+                1.0,
+            );
+            particle.weight = self.parameters.update_weight(particle.weight, diff);
+            if particle.weight > 0.1 {
+                w += particle.weight;
+                p += particle.pose.translation.vector * particle.weight;
+                d += particle.pose.rotation.complex() * particle.weight;
+                if i > j {
+                    unsafe { *self.particles.get_unchecked_mut(j) = particle.clone() };
+                }
+                j += 1;
+            }
+        }
+        if j == 0 {
+            self.particles = self.parameters.initialize(measure);
+        } else {
+            self.particles.truncate(j);
+            self.particles
+                .sort_unstable_by(|a, b| b.weight.partial_cmp(&a.weight).unwrap());
+            if j < self.parameters.count {
+                let total = (self.parameters.count - j) as f32 / w;
+                let sigma = 1.0 - j as f32 / self.parameters.count as f32;
+                for i in 0..j {
+                    let Particle {
+                        model,
+                        pose,
+                        weight,
+                    } = self.particles[i].clone();
+                    let n = (weight * total).round() as isize;
+                    if n <= 0 {
+                        break;
+                    }
+                    for _ in 0..n {
+                        let dx = gaussian() * sigma * 0.1;
+                        let dy = gaussian() * sigma * 0.1;
+                        let (sin, cos) = (gaussian() * sigma * FRAC_PI_4).sin_cos();
+                        self.particles.push(Particle {
+                            model: (self.f)(&model, weight),
+                            pose: pose * isometry(dx, dy, cos, sin),
+                            weight: self.parameters.update_weight(weight, 1.0),
+                        });
                     }
                 }
             }
