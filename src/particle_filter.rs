@@ -90,6 +90,14 @@ where
         self.particles.as_slice()
     }
 
+    /// 查看粒子
+    #[inline]
+    pub fn fold_models<T>(&self, t0: T, f: impl Fn(T, &M, f32) -> T) -> (T, f32) {
+        self.particles.iter().fold((t0, 0.0), |(t, w), p| {
+            (f(t, &p.model, p.weight), w + p.weight)
+        })
+    }
+
     /// 估计当前位姿
     pub fn get(&self) -> Option<Isometry2<f32>> {
         if self.particles.is_empty() {
