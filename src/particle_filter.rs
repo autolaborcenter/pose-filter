@@ -157,11 +157,11 @@ where
         while let Some((t1, m)) = self.incremental.pop_back() {
             match t1.cmp(&t) {
                 Less => {
-                    save = Some((t1, m));
+                    save = Some((t1, m * 0.0));
                     Self::move_particles(&mut self.particles, &m);
                 }
                 Equal => {
-                    save = Some((t1, m));
+                    save = Some((t1, m * 0.0));
                     Self::move_particles(&mut self.particles, &m);
                     break;
                 }
