@@ -14,6 +14,7 @@ pub struct ParticleFilter<M: ChassisModel, F> {
 
     absolute: Option<(Duration, Point2<f32>)>,
     incremental: VecDeque<(Duration, <M as ChassisModel>::Measure)>,
+    t0: Duration,
 
     particles: Vec<Particle<M>>,
     f: F,
@@ -46,6 +47,7 @@ impl<M: ChassisModel, F: FnMut(&M, f32) -> M> ParticleFilter<M, F> {
 
             absolute: None,
             incremental: VecDeque::new(),
+            t0: Duration::ZERO,
 
             particles: Vec::new(),
             f,
@@ -59,26 +61,46 @@ where
     M::Measure: Copy + std::ops::Mul<f32, Output = M::Measure>,
     F: FnMut(&M, f32) -> M,
 {
-    /// 保存一个绝对位置
+    /// 保存一个绝对测量
     #[inline]
     pub fn measure(&mut self, time: Duration, p: Point2<f32>) {
-        self.absolute = Some((time, p));
-        self.calculate();
+        // 粒子未初始化
+        if self.particles.is_empty() {
+            self.particles = self.parameters.initialize(p);
+        }
+        // 绝对测量足够新
+        else if time > self.t0 {
+            self.absolute = Some((time, p));
+            if let Some(t) = self.incremental.front().map(|(t, _)| *t) {
+                if t < time {
+                    self.consume_all(t);
+                } else {
+                    self.calculate();
+                }
+            }
+        }
     }
 
-    /// 保存一个位姿增量
-    #[inline]
+    /// 保存一个增量测量
     pub fn update(&mut self, time: Duration, i: <M as ChassisModel>::Measure) {
         self.incremental.push_front((time, i));
-        self.calculate();
-        // 超时的更新记录直接应用于粒子并移除
-        if let Some(deadline) = time.checked_sub(self.parameters.incremental_timeout) {
-            while let Some((t, m)) = self.incremental.back() {
-                if t <= &deadline {
-                    Self::move_particles(&mut self.particles, m);
-                    self.incremental.pop_back();
-                } else {
-                    break;
+        if let Some((t, _)) = self.absolute {
+            if time < t {
+                self.consume_all(time);
+            } else {
+                self.calculate();
+            }
+        } else {
+            // 超时的更新记录直接应用于粒子并移除
+            if let Some(deadline) = time.checked_sub(self.parameters.incremental_timeout) {
+                while let Some((t, m)) = self.incremental.back() {
+                    if t <= &deadline {
+                        self.t0 = *t;
+                        Self::move_particles(&mut self.particles, m);
+                        self.incremental.pop_back();
+                    } else {
+                        break;
+                    }
                 }
             }
         }
@@ -90,7 +112,7 @@ where
         self.particles.as_slice()
     }
 
-    /// 查看粒子
+    /// 综合模型
     #[inline]
     pub fn fold_models<T>(&self, t0: T, f: impl Fn(T, &M, f32) -> T) -> (T, f32) {
         self.particles.iter().fold((t0, 0.0), |(t, w), p| {
@@ -139,6 +161,15 @@ where
         }
     }
 
+    /// 消费所有增量测量
+    #[inline]
+    fn consume_all(&mut self, time: Duration) {
+        self.t0 = time;
+        while let Some((_, m)) = self.incremental.pop_back() {
+            Self::move_particles(&mut self.particles, &m);
+        }
+    }
+
     /// 使用一个增量移动所有粒子
     #[inline]
     fn move_particles(particles: &mut [Particle<M>], m: &M::Measure) {
@@ -153,37 +184,26 @@ where
             Some(pair) => pair,
             None => return,
         };
-        let mut save = None;
+
         while let Some((t1, m)) = self.incremental.pop_back() {
             match t1.cmp(&t) {
                 Less => {
-                    save = Some((t1, m * 0.0));
+                    self.t0 = t1;
                     Self::move_particles(&mut self.particles, &m);
                 }
                 Equal => {
-                    save = Some((t1, m * 0.0));
+                    self.t0 = t1;
                     Self::move_particles(&mut self.particles, &m);
                     break;
                 }
                 Greater => {
-                    save = if let Some((t0, _)) = save {
-                        let k = (t - t0).as_secs_f32() / (t1 - t0).as_secs_f32();
-                        Self::move_particles(&mut self.particles, &(m * k));
-                        Some((t1, m * (1.0 - k)))
-                    } else {
-                        Some((t1, m))
-                    };
+                    let t0 = std::mem::replace(&mut self.t0, t);
+                    let k = (t - t0).as_secs_f32() / (t1 - t0).as_secs_f32();
+                    Self::move_particles(&mut self.particles, &(m * k));
+                    self.incremental.push_back((t1, m * (1.0 - k)));
                     break;
                 }
             }
-        }
-        if let Some(pair) = save {
-            self.incremental.push_back(pair);
-        } else {
-            if self.particles.is_empty() {
-                self.particles = self.parameters.initialize(measure);
-            }
-            return;
         }
 
         let mut w = 0.0;
