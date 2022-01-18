@@ -108,7 +108,7 @@ where
 
     /// 查看粒子
     #[inline]
-    pub fn particles<'a>(&'a self) -> &'a [Particle<M>] {
+    pub fn particles(&self) -> &[Particle<M>] {
         self.particles.as_slice()
     }
 
@@ -132,7 +132,7 @@ where
             .cloned()
             .collect::<Vec<_>>();
         for (_, m) in self.incremental.iter().rev() {
-            Self::move_particles(&mut particles, &m);
+            Self::move_particles(&mut particles, m);
         }
         let mut weight = 0.0;
         let mut p = vector(0.0, 0.0);

@@ -1,4 +1,5 @@
-﻿use chassis::{isometry, Isometry2};
+﻿use crate::isometry;
+use chassis::Isometry2;
 use std::time::Duration;
 
 /// 基于插值的滤波器，适用于任何物体
