@@ -2,6 +2,9 @@
 use rand::{thread_rng, Rng};
 use std::cell::Cell;
 
+#[macro_use]
+extern crate lazy_static;
+
 // mod derecorder;
 mod interpolation_filter;
 mod particle_filter;

@@ -12,7 +12,7 @@ use std::{
 pub struct ParticleFilter<M: ChassisModel, F> {
     pub parameters: ParticleFilterParameters<M>,
 
-    absolute: Option<(Duration, Point2<f32>)>,
+    absolute: Option<(Duration, Point2<f32>, f32)>,
     incremental: VecDeque<(Duration, <M as ChassisModel>::Measure)>,
     t0: Duration,
 
@@ -34,9 +34,7 @@ pub struct ParticleFilterParameters<M> {
     pub memory_rate: f32,              // 权重的滤波器系数
     pub default_model: M,              // 用于初始化的底盘模型
     pub count: usize,                  // 固定的粒子数量
-    pub measure_weight: f32,           // 基本测量权重
     pub beacon_on_robot: Point2<f32>,  // 定位信标在机器人坐标系上的位置
-    pub max_inconsistency: f32,        // 定位位置变化与估计位置变化允许的最大差距
 }
 
 impl<M: ChassisModel, F: FnMut(&M, f32) -> M> ParticleFilter<M, F> {
@@ -63,14 +61,14 @@ where
 {
     /// 保存一个绝对测量
     #[inline]
-    pub fn measure(&mut self, time: Duration, p: Point2<f32>) {
+    pub fn measure(&mut self, time: Duration, p: Point2<f32>, sigma: f32) {
         // 粒子未初始化
         if self.particles.is_empty() {
             self.particles = self.parameters.initialize(p);
         }
         // 绝对测量足够新
         else if time > self.t0 {
-            self.absolute = Some((time, p));
+            self.absolute = Some((time, p, sigma));
             if let Some(t) = self.incremental.front().map(|(t, _)| *t) {
                 if t < time {
                     self.consume_all(t);
@@ -84,7 +82,7 @@ where
     /// 保存一个增量测量
     pub fn update(&mut self, time: Duration, i: <M as ChassisModel>::Measure) {
         self.incremental.push_front((time, i));
-        if let Some((t, _)) = self.absolute {
+        if let Some((t, _, _)) = self.absolute {
             if time < t {
                 self.consume_all(time);
             } else {
@@ -180,7 +178,7 @@ where
 
     /// 计算粒子权重
     fn calculate(&mut self) {
-        let (t, measure) = match self.absolute.take() {
+        let (t, measure, sigma) = match self.absolute.take() {
             Some(pair) => pair,
             None => return,
         };
@@ -213,12 +211,9 @@ where
         for i in 0..self.particles.len() {
             let particle = unsafe { self.particles.get_unchecked_mut(i) };
             let beacon = particle.pose * self.parameters.beacon_on_robot;
-            let diff = f32::min(
-                (beacon - measure).norm() / self.parameters.max_inconsistency,
-                1.0,
-            );
-            particle.weight = self.parameters.update_weight(particle.weight, diff);
-            if particle.weight > 0.1 {
+            let pdf = pdf((beacon - measure).norm() / sigma);
+            particle.weight = self.parameters.update_weight(particle.weight, pdf);
+            if particle.weight > L.0 {
                 w += particle.weight;
                 p += particle.pose.translation.vector * particle.weight;
                 d += particle.pose.rotation.complex() * particle.weight;
@@ -286,4 +281,17 @@ impl<M: Clone> ParticleFilterParameters<M> {
             })
             .collect()
     }
+}
+
+struct Num<T>(T);
+
+lazy_static! {
+    static ref K: Num<f32> = Num(0.7 * (2.0 * PI).sqrt());
+    static ref L: Num<f32> = Num(1.0 - pdf(0.9 * 3.0));
+}
+
+#[inline]
+fn pdf(x: f32) -> f32 {
+    // https://zhuanlan.zhihu.com/p/87300672
+    1.0 - 2.0 * (x.powi(2) / -2.0).exp() / (K.0 * x + 2.0)
 }
